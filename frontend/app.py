@@ -5,22 +5,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import streamlit as st
 
 st.set_page_config(page_title="CareGuide | Insurance Assistant", page_icon="🩺", layout="wide")
-st.markdown("""
-<style>
-.block-container {max-width: 1120px; padding-top: 2rem; padding-bottom: 3rem;}
-[data-testid="stSidebar"] {border-right: 1px solid rgba(128,128,128,.18);}
-.care-hero {background: linear-gradient(120deg,#102d40,#12675f); color: white;
- padding: 2rem 2.2rem; border-radius: 22px; margin-bottom: 1.4rem;}
-.care-eyebrow {font-size: .75rem; letter-spacing: .16em; font-weight: 700; color: #9fe1d4;}
-.care-hero h1 {color: white; font-size: clamp(1.8rem,4vw,2.7rem); padding: .5rem 0; line-height: 1.2;}
-.care-hero p {color: #d8ebe9; max-width: 650px; margin-bottom: 0; line-height: 1.7;}
-.care-brand {font-size: 1.65rem; font-weight: 750; margin-bottom: .2rem;}
-[data-testid="stChatMessage"] {border: 1px solid rgba(128,128,128,.18); border-radius: 16px; padding: 1.2rem;}
-[data-testid="stMetric"] {border: 1px solid rgba(128,128,128,.2); border-radius: 14px; padding: 1rem;}
-.stButton > button {border-radius: 10px; min-height: 2.8rem;}
-@media (max-width: 640px) {.care-hero {padding: 1.4rem;} .block-container {padding-top: 1rem;}}
-</style>
-""", unsafe_allow_html=True)
+from frontend.design import apply_design, render_header, render_status, conversation_export
+
+apply_design()
 try:
     from config.settings import settings
     from frontend.session import get_session_pipeline
@@ -41,23 +28,29 @@ def ensure_documents_ingested():
 
 def render_sidebar():
     with st.sidebar:
-        st.markdown('<div class="care-brand">🩺 CareGuide</div>', unsafe_allow_html=True)
-        st.caption("YOUR POLICY, MADE CLEARER")
-        st.divider()
-        st.write("Explore your healthcare benefits with answers supported by your plan documents.")
-        st.subheader("Knowledge base")
-        try:
-            st.write(f"{chroma_manager.count()} indexed passages")
-        except Exception:
-            st.caption("Index is not ready yet.")
-        if st.button("＋ New conversation", use_container_width=True):
+        st.markdown('<div class="cg-brand"><span class="cg-brand-mark">+</span>CareGuide</div><div class="cg-brand-sub">Clarity for your coverage.</div>', unsafe_allow_html=True)
+        if st.button("＋ New conversation", type="primary", use_container_width=True):
             st.session_state.messages = []
             if "rag_pipeline" in st.session_state:
                 st.session_state.rag_pipeline.memory.clear()
             st.rerun()
+        messages = st.session_state.get("messages", [])
+        if messages:
+            st.download_button("↓ Save conversation", conversation_export(messages),
+                               file_name="careguide-conversation.md", mime="text/markdown",
+                               use_container_width=True)
+        st.caption("Start fresh anytime. A new conversation clears this session's chat history.")
         st.divider()
-        st.markdown("**How it works**")
-        st.caption("1. Ask a question about your plan.\n\n2. Review the answer and cited passages.\n\n3. Ask a follow-up to explore the details.")
+        st.markdown("**Your knowledge base**")
+        with st.container(border=True):
+            try:
+                count = chroma_manager.count()
+                st.write(f"▤  {count:,} indexed passages")
+                st.caption("Available for document search" if count else "Add documents to get started")
+            except Exception:
+                st.caption("Index is not ready yet.")
+        st.markdown("**A little guidance**")
+        st.caption("Ask one clear question at a time. Mention your plan or benefit when possible, then explore the cited evidence.")
         with st.expander("Setup and connection checks"):
             st.caption(f"Chat provider: {settings.llm_provider}")
             st.caption(f"Embeddings: {settings.embedding_provider}")
@@ -76,12 +69,15 @@ def render_sidebar():
                     except Exception as exc:
                         st.error(classify_error(exc).message)
         st.divider()
+        with st.expander("About your conversation"):
+            st.caption("Chat memory is separate for each browser session. Questions and relevant passages may be sent to the configured AI provider. Feedback and tracing may be stored.")
+            st.caption("Document availability does not confirm AI service availability. Use the connection check if answers fail.")
         st.caption("Use this assistant to understand documents. Confirm coverage decisions with your insurer.")
 
 def render_sources(sources):
     if not sources:
         return
-    with st.expander(f"View evidence ({len(sources)} passages)"):
+    with st.expander(f"▤  Sources & evidence · {len(sources)} passages"):
         for number, source in enumerate(sources, 1):
             with st.container(border=True):
                 st.write(f"[{number}] {source['document_name']}")
@@ -89,7 +85,10 @@ def render_sources(sources):
                 if source.get("section_title"):
                     st.caption(source["section_title"])
                 if source.get("excerpt"):
-                    st.text(source["excerpt"])
+                    # Markdown is escaped so extracted document text cannot inject links or formatting.
+                    import re
+                    excerpt = re.sub(r"([\\`*_{}\[\]()<>#+.!|~-])", r"\\\1", source["excerpt"])
+                    st.markdown(excerpt)
 
 def render_assistant_message(index, message, skip_content=False):
     if not skip_content:
@@ -109,8 +108,9 @@ def render_assistant_message(index, message, skip_content=False):
     if message.get("status") == "error":
         st.caption("If evidence is shown above, document search worked but answer generation did not. Use the connection check in the sidebar.")
         return
+    st.caption("Was this useful?")
     left, right = st.columns(2)
-    for column, label, rating in ((left, "Helpful", "up"), (right, "Not helpful", "down")):
+    for column, label, rating in ((left, "👍 Helpful", "up"), (right, "👎 Not helpful", "down")):
         with column:
             if st.button(label, key=f"{rating}_{index}"):
                 saved = log_feedback(message.get("question", ""), message["content"], message.get("sources", []), rating=rating)
@@ -120,11 +120,7 @@ def render_assistant_message(index, message, skip_content=False):
                     st.warning("Feedback could not be saved. Your answer is unaffected.")
 
 def main():
-    st.markdown('''<div class="care-hero">
-    <div class="care-eyebrow">CAREGUIDE · HEALTHCARE INSURANCE ASSISTANT</div>
-    <h1>Understand your coverage.<br>Find the details that matter.</h1>
-    <p>Ask about benefits, deductibles, and plan rules. Explore answers alongside
-    the passages from your policy that support them.</p></div>''', unsafe_allow_html=True)
+    render_header(bool(st.session_state.get("messages")))
     try:
         settings.validate()
     except ValueError as exc:
@@ -158,29 +154,27 @@ def main():
         return
     if "messages" not in st.session_state:
         st.session_state.messages = []
-    overview = st.columns(3)
-    overview[0].metric("Indexed passages", f"{chroma_manager.count():,}", help="Number of indexed document passages, not documents.")
-    overview[1].metric("Evidence", "Source passages")
-    overview[2].metric("Conversation", "Session memory", help="Conversation memory is separate for each browser session. Questions and retrieved passages may be sent to your configured AI provider; feedback and tracing may be stored.")
-    st.caption("Indexed passages are ready for search. AI service availability depends on your configured provider and quota.")
+    render_status(chroma_manager.count())
     suggested_question = None
     if not st.session_state.messages:
-        st.subheader("What would you like to understand?")
-        st.caption("Choose a starting point, or write your own question below.")
+        st.markdown('<div class="cg-kicker">A GOOD PLACE TO START</div>', unsafe_allow_html=True)
+        st.subheader("What would you like to explore?")
+        st.caption("Pick a topic below, or ask a question in your own words.")
         prompts = [
-            ("💳 Costs & deductibles", "What does my plan say about deductibles and out-of-pocket costs?"),
-            ("🩺 Benefits & coverage", "What benefits and coverage are described in my plan?"),
-            ("📋 Exclusions & limits", "What exclusions and coverage limits should I know about?"),
+            ("01 / COSTS", "Understand your costs", "Deductibles, copayments, and what you pay out of pocket.", "What does my plan say about deductibles and out-of-pocket costs?"),
+            ("02 / BENEFITS", "Know what's covered", "Explore the services and benefits described in your plan.", "What benefits and coverage are described in my plan?"),
+            ("03 / PLAN RULES", "See the fine print", "Understand exclusions, coverage limits, and conditions.", "What exclusions and coverage limits should I know about?"),
         ]
-        for column, (label, prompt) in zip(st.columns(3), prompts):
-            with column:
-                if st.button(label, use_container_width=True):
+        for column, (eyebrow, title, description, prompt) in zip(st.columns(3), prompts):
+            with column, st.container(border=True):
+                st.markdown(f'<div class="cg-topic"><small>{eyebrow}</small><strong>{title}</strong><p>{description}</p></div>', unsafe_allow_html=True)
+                if st.button("Explore topic →", key=eyebrow, use_container_width=True):
                     suggested_question = prompt
-        st.divider()
+        st.caption("Answers are based on your indexed documents. If a detail isn't supported, CareGuide will say so.")
     else:
-        st.subheader("Your conversation")
+        st.caption("YOUR CONVERSATION · Questions and supporting evidence in one place")
     for index, message in enumerate(st.session_state.messages):
-        with st.chat_message(message["role"]):
+        with st.chat_message(message["role"], avatar="🩺" if message["role"] == "assistant" else None):
             if message["role"] == "assistant":
                 render_assistant_message(index, message)
             else:
@@ -190,7 +184,7 @@ def main():
         st.session_state.messages.append({"role": "user", "content": question})
         with st.chat_message("user"):
             st.markdown(question)
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar="🩺"):
             placeholder = st.empty()
             try:
                 result = pipeline.answer_question(
@@ -208,7 +202,7 @@ def main():
                 placeholder.markdown(result["answer"])
             message = dict(result, role="assistant", content=result["answer"], question=question)
             st.session_state.messages.append(message)
-            render_assistant_message(len(st.session_state.messages) - 1, message, skip_content=True)
+            st.rerun()
 
 if __name__ == "__main__":
     main()
