@@ -98,6 +98,8 @@ def render_assistant_message(index, message, skip_content=False):
         else:
             st.markdown(message["content"])
     render_sources(message.get("sources", []))
+    if message.get("status") == "not_found":
+        st.info("Try naming the benefit or plan, or rephrasing your question. The needed document may not be uploaded. For details outside these documents, check with your insurer; for unrelated topics, use a general-purpose assistant.")
     if message.get("confidence") is not None and message.get("sources"):
         st.caption(f"Retrieved-source relevance: {message['confidence']:.0%} · This is not an answer-accuracy score.")
     if message.get("grounded") is False:

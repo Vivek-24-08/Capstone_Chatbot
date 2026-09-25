@@ -68,6 +68,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config.settings import settings
 from rag_pipeline import guardrails, retrieval_service
+from rag_pipeline.conversation import conversational_reply
 from rag_pipeline.llm_service import acquire_chat_slot, get_chat_model
 from rag_pipeline.memory import ConversationMemory
 from rag_pipeline.multi_hop import plan_next_hop
@@ -387,6 +388,12 @@ class RAGPipeline:
 
     def answer_question(self, question, on_token=None, on_status=None):
         """Run a turn, returning explicit errors without polluting chat memory."""
+        # Exact social phrases only: mixed greetings + policy questions still use RAG.
+        # Do not store social turns in retrieval memory or consume provider quota.
+        reply = conversational_reply(question)
+        if reply is not None:
+            return {"answer": reply, "sources": [], "confidence": None,
+                    "grounded": None, "status": "conversational", "warnings": []}
         allowed, reason = guardrails.check_input(question)
         if not allowed:
             return {"answer": reason, "sources": [], "confidence": 0.0,
