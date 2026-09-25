@@ -61,7 +61,7 @@ def _get_cross_encoder() -> Optional[Any]:
     try:
         from sentence_transformers import CrossEncoder
 
-        _cross_encoder = CrossEncoder(settings.reranker_model)
+        _cross_encoder = CrossEncoder(settings.reranker_model, device="cpu")
         logger.info("Reranker model '%s' loaded", settings.reranker_model)
     except Exception:
         _load_failed = True
@@ -96,7 +96,11 @@ def rerank(question: str, candidates: List[Dict[str, Any]]) -> List[Dict[str, An
         return candidates
 
     pairs = [(question, c["chunk_text"]) for c in candidates]
-    raw_scores = model.predict(pairs)
+    try:
+        raw_scores = model.predict(pairs)
+    except Exception:
+        logger.warning("Reranking failed; using the original retrieval order.", exc_info=True)
+        return candidates
 
     for candidate, raw_score in zip(candidates, raw_scores):
         # ms-marco cross-encoders output a raw, UNBOUNDED logit (can be
@@ -105,6 +109,8 @@ def rerank(question: str, candidates: List[Dict[str, Any]]) -> List[Dict[str, An
         # calibrated-looking probability in (0, 1) that's safe to average
         # into a "confidence" percentage for the UI. Sigmoid is monotonic,
         # so this changes nothing about the resulting sort order below.
-        candidate["rerank_score"] = 1.0 / (1.0 + math.exp(-float(raw_score)))
+        score = float(raw_score)
+        candidate["rerank_score"] = (1.0 / (1.0 + math.exp(-score)) if score >= 0
+                                      else math.exp(score) / (1.0 + math.exp(score)))
 
     return sorted(candidates, key=lambda c: c["rerank_score"], reverse=True)

@@ -37,6 +37,7 @@
 # ==============================================================================
 
 from typing import List, Tuple
+from config.settings import settings
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -68,7 +69,7 @@ def rewrite_query(question: str, chat_history: List[Tuple[str, str]], llm) -> st
     Returns:
         A standalone question string, safe to embed and search with.
     """
-    if not chat_history:
+    if not chat_history or not settings.enable_query_rewriting:
         # Nothing to resolve against -- skip the extra LLM round trip.
         return question
 

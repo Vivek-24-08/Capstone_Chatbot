@@ -30,6 +30,7 @@
 # ==============================================================================
 
 import re
+from decimal import Decimal
 from typing import Optional, Tuple
 
 from utils.logging_utils import get_logger
@@ -102,7 +103,17 @@ def check_grounding(answer: str, retrieved_chunk_texts: list) -> bool:
     if not retrieved_chunk_texts:
         return False
 
-    context_words = set(re.findall(r"[a-z]{4,}", " ".join(retrieved_chunk_texts).lower()))
+    # Ignore citation page numbers; compare explicit money/percent values only.
+    # This catches unsupported amounts, not full claim entailment.
+    answer_body = re.sub(r"[\[(]Source:.*?[\])]", "", answer, flags=re.IGNORECASE)
+    def quantities(text):
+        matches = re.findall(r"(\$)\s*(\d[\d,]*(?:\.\d+)?)|(\d[\d,]*(?:\.\d+)?)\s*(%)", text)
+        return {(currency or percent, Decimal((amount or rate).replace(",", "")))
+                for currency, amount, rate, percent in matches}
+    context_text = " ".join(retrieved_chunk_texts)
+    if not quantities(answer_body).issubset(quantities(context_text)):
+        return False
+    context_words = set(re.findall(r"[a-z]{4,}", context_text.lower()))
     answer_words = set(re.findall(r"[a-z]{4,}", answer.lower()))
     if not answer_words:
         return False

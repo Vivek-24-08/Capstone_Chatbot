@@ -1,168 +1,114 @@
-# ==============================================================================
-# scripts/ingest.py
-# ------------------------------------------------------------------------------
-# Orchestrates the full ingestion pipeline:
-#   Load PDFs -> Parse PDFs -> Chunk -> Generate Embeddings -> Store
-#   (both in ChromaDB for search and SQLite for structured audit).
-#
-# WHAT THIS FILE DOES
-#   Wires together every module built so far into one function,
-#   `run_ingestion()`, that is:
-#     - IDEMPOTENT: re-running it does nothing if no PDFs changed.
-#     - INCREMENTAL: adding a new PDF to data/pdfs/ and re-running only
-#       processes the new file, not the ones already indexed.
-#     - CALLABLE TWO WAYS: as a one-time CLI command
-#       (`python -m scripts.ingest`), and imported directly by the
-#       Streamlit frontend to auto-ingest on first launch (per the "no
-#       upload UI, backend handles ingestion" requirement).
-#
-# WHY HASH-BASED CHANGE DETECTION
-#   Comparing a SHA-256 hash of each PDF's bytes against the hash recorded
-#   the last time it was ingested (vector_store/metadata_table.py's
-#   `ingested_files` table) is a simple, reliable way to answer "has this
-#   file actually changed since we last processed it?" -- cheaper than
-#   re-embedding every chunk of every document on every app restart, and
-#   correct even if the file was edited without changing its name.
-#
-# INPUT / OUTPUT
-#   Input:  PDFs in settings.pdf_data_dir.
-#   Output: none returned; side effect is a populated ChromaDB collection +
-#           SQLite metadata_table. Returns a summary dict for logging/UI.
-# ==============================================================================
+"""Incremental ingestion with staged vectors and an atomic publish step.
 
+Existing commands are unchanged: python -m scripts.ingest [--force].
+Unchanged documents reuse vectors; incompatible embedding configurations rebuild.
+Old collections remain on disk so in-flight readers can finish safely.
+"""
+import argparse
 import hashlib
+import math
 from pathlib import Path
-from typing import Any, Dict, List
-
+from filelock import FileLock
 from chunking.chunker import Chunk, chunk_documents
 from config.settings import settings
 from embeddings.embedding_service import generate_embeddings
-from ingestion.pdf_loader import PageContent, load_pdfs
-from utils.logging_utils import get_logger
+from ingestion.pdf_loader import _extract_pages_from_pdf
 from vector_store import chroma_manager, metadata_table
+from vector_store.index_config import index_fingerprint
+from utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+def _file_hash(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(65536), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
-def _file_hash(path: Path) -> str:
-    """SHA-256 hash of a file's raw bytes -- used to detect content changes."""
-    sha256 = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(65536), b""):
-            sha256.update(block)
-    return sha256.hexdigest()
+def _validate_vectors(chunks, vectors):
+    if len(chunks) != len(vectors) or not vectors:
+        raise ValueError("Embedding provider returned an incomplete batch.")
+    dimension = len(vectors[0])
+    if not dimension or any(len(v) != dimension or not all(math.isfinite(float(x)) for x in v) for v in vectors):
+        raise ValueError("Embedding provider returned invalid vectors.")
 
+def _reuse_document(name):
+    raw = chroma_manager.read_document(name)
+    chunks = [Chunk(chunk_id=identifier, chunk_text=text, file_name=name,
+                    page_number=meta["page_number"], document_type=meta["document_type"],
+                    created_timestamp=meta["created_timestamp"], chapter_title=meta.get("chapter_title"),
+                    section_title=meta.get("section_title"))
+              for identifier, text, meta in zip(raw["ids"], raw["documents"], raw["metadatas"])]
+    embeddings = [list(map(float, vector)) for vector in raw["embeddings"]]
+    return chunks, embeddings
 
-def _files_needing_ingestion(pdf_dir: str) -> List[Path]:
-    """
-    Compare each PDF's current content hash against what's recorded in the
-    metadata table, and return only the files that are new or changed.
-    """
-    folder = Path(pdf_dir)
-    if not folder.exists():
-        logger.warning("PDF data directory '%s' does not exist", pdf_dir)
-        return []
-
-    to_process: List[Path] = []
-    for pdf_path in sorted(folder.glob("*.pdf")):
-        current_hash = _file_hash(pdf_path)
-        previous_hash = metadata_table.get_ingested_file_hash(pdf_path.name)
-        if previous_hash == current_hash:
-            logger.info("'%s' unchanged since last ingestion -- skipping", pdf_path.name)
-        else:
-            to_process.append(pdf_path)
-    return to_process
-
-
-def _ingest_single_file(pdf_path: Path) -> int:
-    """
-    Run one file through load -> chunk -> embed -> store, replacing any
-    stale chunks from a previous version of the same file first.
-
-    Returns the number of chunks produced for this file.
-    """
-    from ingestion.pdf_loader import _extract_pages_from_pdf  # single-file variant
-
-    pages: List[PageContent] = _extract_pages_from_pdf(pdf_path)
-    if not pages:
-        logger.warning("No extractable text in '%s' -- nothing to index", pdf_path.name)
-        return 0
-
-    chunks: List[Chunk] = chunk_documents(pages)
-    if not chunks:
-        return 0
-
-    # Remove any chunks from a previous version of this file before
-    # inserting the fresh set, so re-ingesting a changed PDF doesn't leave
-    # stale chunks from the old version behind.
-    chroma_manager.delete_by_document(pdf_path.name)
-    metadata_table.delete_by_document(pdf_path.name)
-
-    embeddings = generate_embeddings([c.chunk_text for c in chunks])
-    chroma_manager.upsert_chunks(chunks, embeddings)
-    metadata_table.insert_chunks(chunks, embeddings)
-
-    return len(chunks)
-
-
-def run_ingestion(force: bool = False) -> Dict[str, Any]:
-    """
-    Ingest every new or changed PDF in settings.pdf_data_dir.
-
-    Args:
-        force: if True, re-process every PDF regardless of whether its
-               content hash has changed (useful after switching embedding
-               providers, since old vectors were produced by a different
-               model and are no longer comparable to new query embeddings).
-
-    Returns:
-        A summary dict: {"files_processed": [...], "total_chunks": int,
-        "skipped": [...]} -- handy for logging or displaying a Streamlit
-        "Indexing complete" message.
-    """
-    metadata_table.create_tables()
-
+def run_ingestion(force=False, on_status=None):
+    settings.validate(require_chat=False)
     folder = Path(settings.pdf_data_dir)
-    all_pdfs = sorted(folder.glob("*.pdf")) if folder.exists() else []
-    if not all_pdfs:
-        logger.warning("No PDFs found in '%s' -- nothing to ingest", settings.pdf_data_dir)
-        return {"files_processed": [], "total_chunks": 0, "skipped": []}
+    if not folder.is_dir():
+        # An unavailable/mistyped mount must never withdraw every document.
+        raise FileNotFoundError("PDF directory is missing; check PDF_DATA_DIR.")
+    Path(settings.metadata_db_path).parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(settings.metadata_db_path) + ".ingest.lock", timeout=10):
+        return _run_locked(folder, force, on_status or (lambda message: None))
 
-    files_to_process = all_pdfs if force else _files_needing_ingestion(settings.pdf_data_dir)
-    skipped = [p.name for p in all_pdfs if p not in files_to_process]
+def _run_locked(folder, force, notify):
+    metadata_table.create_tables()
+    paths = sorted(folder.glob("*.pdf"))
+    hashes = {p.name: _file_hash(p) for p in paths}
+    previous = metadata_table.get_ingested_files()
+    state = metadata_table.get_index_state()
+    fingerprint = index_fingerprint()
+    reuse = not force and bool(state) and state["fingerprint"] == fingerprint
+    try:
+        healthy = chroma_manager.count() == sum(info["chunk_count"] for info in previous.values())
+    except Exception:
+        healthy = False
+    reuse = reuse and healthy
+    removed = sorted(set(previous) - set(hashes))
+    changed = [p.name for p in paths if not reuse or previous.get(p.name, {}).get("file_hash") != hashes[p.name]]
+    if reuse and not changed and not removed:
+        return {"files_processed": [], "total_chunks": 0, "skipped": list(hashes), "removed": []}
+    all_chunks, all_vectors, file_info = [], [], {}
+    for path in paths:
+        if path.name not in changed:
+            chunks, vectors = _reuse_document(path.name)
+            if len(chunks) != previous[path.name]["chunk_count"]:
+                raise RuntimeError("Index document counts are inconsistent; retry ingestion with --force.")
+        else:
+            notify(f"Indexing {path.name}...")
+            pages = _extract_pages_from_pdf(path)
+            chunks = chunk_documents(pages)
+            if not chunks:
+                raise ValueError(f"No readable text in {path.name}; use a text-based PDF or OCR it first. Previous index preserved.")
+            vectors = generate_embeddings([c.chunk_text for c in chunks])
+            _validate_vectors(chunks, vectors)
+        all_chunks.extend(chunks)
+        all_vectors.extend(vectors)
+        file_info[path.name] = {"hash": hashes[path.name], "count": len(chunks)}
+    # Catch edits/removals/additions while processing; never publish stale file hashes.
+    if {p.name: _file_hash(p) for p in sorted(folder.glob("*.pdf"))} != hashes:
+        raise RuntimeError("Source PDFs changed during ingestion. Retry; the previous index is preserved.")
+    notify("Publishing the prepared index...")
+    name = chroma_manager.stage_generation(all_chunks, all_vectors)
+    try:
+        metadata_table.publish_generation(name, fingerprint, all_chunks, all_vectors, file_info)
+    except BaseException:
+        chroma_manager.discard_generation(name)
+        raise
+    return {"files_processed": changed,
+            "total_chunks": sum(file_info[n]["count"] for n in changed),
+            "skipped": [n for n in hashes if n not in changed], "removed": removed}
 
-    total_chunks = 0
-    processed_names: List[str] = []
-    for pdf_path in files_to_process:
-        logger.info("Ingesting '%s'...", pdf_path.name)
-        chunk_count = _ingest_single_file(pdf_path)
-        if chunk_count > 0:
-            metadata_table.upsert_ingested_file(
-                file_name=pdf_path.name,
-                file_hash=_file_hash(pdf_path),
-                chunk_count=chunk_count,
-            )
-            total_chunks += chunk_count
-            processed_names.append(pdf_path.name)
-
-    summary = {
-        "files_processed": processed_names,
-        "total_chunks": total_chunks,
-        "skipped": skipped,
-    }
-    logger.info(
-        "Ingestion complete: %d file(s) processed (%d chunks), %d file(s) unchanged/skipped",
-        len(processed_names),
-        total_chunks,
-        len(skipped),
-    )
-    return summary
-
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--force", action="store_true", help="Rebuild all vectors in a fresh collection before publishing.")
+    args = parser.parse_args()
+    result = run_ingestion(force=args.force, on_status=print)
+    print(f"Files processed: {result['files_processed']}")
+    print(f"Files withdrawn: {result['removed']}")
+    print(f"Total chunks now in index: {chroma_manager.count()}")
 
 if __name__ == "__main__":
-    settings.validate()
-    result = run_ingestion()
-    print(f"Files processed: {result['files_processed']}")
-    print(f"Total new chunks: {result['total_chunks']}")
-    print(f"Files unchanged (skipped): {result['skipped']}")
-    print(f"Total chunks now in index: {chroma_manager.count()}")
+    main()

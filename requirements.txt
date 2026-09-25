@@ -53,7 +53,9 @@ langchain-core==0.3.15
 langchain-text-splitters==0.3.2   # RecursiveCharacterTextSplitter
 
 # --- Vector database ------------------------------------------------------------
-chromadb==0.5.15
+# Binary wheels avoid the old chroma-hnswlib C++ build requirement on Windows.
+chromadb==1.0.20
+filelock==3.16.1                 # serializes index publishers across processes
 
 # --- PDF parsing -------------------------------------------------------------------
 PyMuPDF==1.24.10                  # imported as "fitz"

@@ -78,6 +78,7 @@ from rag_pipeline.reranker import rerank
 from rag_pipeline.retrieval_service import RetrievedChunk, chunk_identity
 from utils.logging_utils import get_logger
 from utils.mlflow_tracking import trace_query
+from utils.service_errors import classify_error, is_transient
 
 logger = get_logger(__name__)
 
@@ -112,6 +113,17 @@ def _is_permanent_auth_error(exc: BaseException) -> bool:
     return any(marker in message for marker in _PERMANENT_AUTH_ERROR_MARKERS)
 
 
+def _response_text(content):
+    """LangChain models may return strings or typed content blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(block if isinstance(block, str) else block.get("text", "")
+                       for block in content if isinstance(block, str) or
+                       (isinstance(block, dict) and block.get("type") == "text"))
+    return ""
+
+
 @dataclass
 class RetrievalStages:
     """The candidate ranking before AND after reranking, for one question."""
@@ -125,10 +137,8 @@ class RAGPipeline:
     Orchestrates one full question-answering turn: rewrite -> retrieve ->
     rerank -> build context -> generate -> guardrail-check.
 
-    One instance is created per Streamlit session (see frontend/app.py,
-    cached via st.cache_resource) and reused across every question the user
-    asks, so the underlying Gemini client and embedding model are only
-    initialized once.
+    One instance lives in each browser's session state. Its conversation memory
+    is private to that session; model factories share the expensive clients.
     """
 
     def __init__(self):
@@ -309,18 +319,18 @@ class RAGPipeline:
         # all) when the underlying error is a permanent auth failure (a
         # dead/invalid API key): retrying that with backoff just delays the
         # same guaranteed failure by 10-20 seconds for nothing.
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=2, min=3, max=20),
         retry=lambda retry_state: (
             retry_state.outcome.failed
-            and not _is_permanent_auth_error(retry_state.outcome.exception())
+            and is_transient(retry_state.outcome.exception())
         ),
         reraise=True,
     )
     def _invoke_llm(self, messages: List) -> str:
         acquire_chat_slot()
         response = self._llm.invoke(messages)
-        return response.content.strip()
+        return _response_text(response.content)
 
     @retry(
         # Same policy as _invoke_llm() above -- this decorator wraps ONE
@@ -331,11 +341,11 @@ class RAGPipeline:
         # from scratch rather than appending a stale partial answer to a new
         # one, since each call passes the full accumulated-so-far text, not
         # a delta.
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(2),
         wait=wait_exponential(multiplier=2, min=3, max=20),
         retry=lambda retry_state: (
             retry_state.outcome.failed
-            and not _is_permanent_auth_error(retry_state.outcome.exception())
+            and is_transient(retry_state.outcome.exception())
         ),
         reraise=True,
     )
@@ -343,133 +353,91 @@ class RAGPipeline:
         acquire_chat_slot()
         accumulated = ""
         for chunk in self._llm.stream(messages):
-            piece = chunk.content or ""
+            piece = _response_text(chunk.content)
             if piece:
                 accumulated += piece
                 on_token(accumulated)
+        if not accumulated.strip():
+            raise ValueError("The model returned an empty response.")
         return accumulated.strip()
 
-    def generate_answer(
-        self, context: str, question: str, on_token: Optional[Callable[[str], None]] = None
-    ) -> str:
-        """
-        Call the chat model with the grounded prompt and return its raw text
-        answer.
-
-        If `on_token` is given, the answer streams: `on_token` is called
-        with the accumulated text so far every time a new piece arrives
-        (e.g. for a Streamlit placeholder to re-render), and this method
-        still returns the final complete string once streaming finishes --
-        everything downstream (grounding check, memory, MLflow logging)
-        works from that same final string exactly as it does today, so
-        streaming is purely a display-layer change, not a different answer.
-        Without `on_token`, this makes one plain, non-streaming call.
-
-        If the LLM call still fails (e.g. a sustained rate limit, an outage,
-        or an invalid/revoked API key), this returns a clear, user-facing
-        message instead of letting an unhandled exception reach the
-        Streamlit UI as a raw traceback -- a degraded but honest response
-        beats a crashed chat turn. A permanent auth failure gets its own
-        distinct message rather than the generic "try again in a moment"
-        one, since waiting will never fix a dead key.
-        """
+    def generate_answer(self, context, question, on_token=None):
         messages = build_prompt(context, question, self.memory.get_history())
+        self._generation_issue = None
         try:
-            if on_token is not None:
-                return self._stream_llm(messages, on_token)
-            return self._invoke_llm(messages)
+            if on_token is not None and settings.enable_streaming:
+                try:
+                    answer = self._stream_llm(messages, on_token)
+                except Exception as exc:
+                    if classify_error(exc).code in {"authentication", "permission", "model", "quota"}:
+                        raise
+                    logger.warning("Streaming failed; trying a normal response.", exc_info=True)
+                    # A failed stream may already have rendered a partial response.
+                    # The final full answer replaces it in the UI.
+                    answer = self._invoke_llm(messages)
+            else:
+                answer = self._invoke_llm(messages)
+            if not answer.strip():
+                raise ValueError("The model returned an empty response.")
+            return answer.strip()
         except Exception as exc:
             logger.exception("Chat model call failed")
-            if _is_permanent_auth_error(exc):
-                return AUTH_ERROR_MESSAGE
-            return SERVICE_UNAVAILABLE_MESSAGE
+            self._generation_issue = classify_error(exc)
+            return self._generation_issue.message
 
-    def answer_question(
-        self, question: str, on_token: Optional[Callable[[str], None]] = None
-    ) -> Dict[str, Any]:
-        """
-        Run one full chat turn end-to-end: input guardrail -> query rewrite
-        -> retrieve -> rerank -> build context -> generate -> grounding
-        check -> update memory.
-
-        `on_token`, if given, is forwarded to generate_answer() so the final
-        answer streams instead of arriving all at once -- see that method's
-        docstring. It has no effect on the guardrail-rejection or "not
-        found" fallback paths, which return instantly with no LLM call
-        either way.
-
-        Returns:
-            {
-              "answer": str,
-              "sources": [{"document_name", "document_type", "page_number", "score"}, ...],
-              "confidence": float,  # average retrieval score of chunks actually used, 0 if none
-              "grounded": bool,     # heuristic grounding check result
-            }
-        """
-        is_allowed, rejection_reason = guardrails.check_input(question)
-        if not is_allowed:
-            return {"answer": rejection_reason, "sources": [], "confidence": 0.0, "grounded": True}
-
-        active_chat_model = (
-            settings.gemini_chat_model
-            if settings.llm_provider == "gemini"
-            else settings.databricks_llm_endpoint
-        )
-        with trace_query(question, top_k=settings.top_k, chat_model=active_chat_model) as run_data:
-            standalone_question = rewrite_query(question, self.memory.get_history(), self._llm)
-
-            try:
-                chunks = self.retrieve(standalone_question)
-            except Exception as exc:
-                # The embedding call inside retrieve() has no fallback of
-                # its own (unlike generate_answer() below) -- an invalid
-                # API key or a dead embedding endpoint would otherwise
-                # crash this whole method with a raw traceback reaching the
-                # Streamlit UI. Degrade the same way generate_answer() does.
-                logger.exception("Retrieval failed")
-                answer = AUTH_ERROR_MESSAGE if _is_permanent_auth_error(exc) else SERVICE_UNAVAILABLE_MESSAGE
-                self.memory.add_turn(question, answer)
-                run_data["answer"] = answer
-                run_data["retrieved_chunks"] = []
-                return {"answer": answer, "sources": [], "confidence": 0.0, "grounded": True}
-
-            if not chunks:
-                # No relevant context at all -- return the required fallback
-                # sentence directly, without ever calling the LLM. This
-                # guarantees the exact required wording and avoids the
-                # (small but real) risk of the model answering from its own
-                # general knowledge when given empty context.
-                answer = NOT_FOUND_MESSAGE
-                sources: List[Dict[str, Any]] = []
-                confidence = 0.0
-                is_grounded = True
-            else:
+    def answer_question(self, question, on_token=None, on_status=None):
+        """Run a turn, returning explicit errors without polluting chat memory."""
+        allowed, reason = guardrails.check_input(question)
+        if not allowed:
+            return {"answer": reason, "sources": [], "confidence": 0.0,
+                    "grounded": True, "status": "rejected", "warnings": []}
+        notify = on_status or (lambda message: None)
+        warnings = []
+        sources = []
+        stage = "retrieval"
+        model = settings.gemini_chat_model if settings.llm_provider == "gemini" else settings.databricks_llm_endpoint
+        try:
+            with trace_query(question, top_k=settings.top_k, chat_model=model) as run_data:
+                notify("Understanding your question (API quota may require a short wait)...")
+                standalone = rewrite_query(question, self.memory.get_history(), self._llm)
+                notify("Searching the indexed documents and ranking evidence...")
+                chunks = self.retrieve(standalone)
+                if not chunks:
+                    answer = NOT_FOUND_MESSAGE
+                    self.memory.add_turn(question, answer)
+                    run_data["answer"] = answer
+                    return {"answer": answer, "sources": [], "confidence": 0.0,
+                            "grounded": True, "status": "not_found", "warnings": []}
                 context = self.build_context(chunks)
                 if settings.enable_multi_hop:
-                    chunks, context = self._run_multi_hop(standalone_question, chunks, context)
-                answer = self.generate_answer(context, standalone_question, on_token=on_token)
-                sources = [
-                    {
-                        "document_name": c.document_name,
-                        "document_type": c.document_type,
-                        "page_number": c.page_number,
-                        "score": c.score,
-                        "chapter_title": c.chapter_title,
-                        "section_title": c.section_title,
-                    }
-                    for c in chunks
-                ]
-                confidence = sum(c.score for c in chunks) / len(chunks)
-                is_grounded = guardrails.check_grounding(answer, [c.chunk_text for c in chunks])
-
-            self.memory.add_turn(question, answer)
-
-            run_data["answer"] = answer
-            run_data["retrieved_chunks"] = sources
-
-        return {
-            "answer": answer,
-            "sources": sources,
-            "confidence": round(confidence, 3),
-            "grounded": is_grounded,
-        }
+                    notify("Checking whether more evidence is needed...")
+                    try:
+                        chunks, context = self._run_multi_hop(standalone, chunks, context)
+                    except Exception:
+                        logger.warning("Follow-up search failed; keeping the original evidence.", exc_info=True)
+                        warnings.append("The additional evidence search failed; this answer uses the first search results.")
+                sources = [{"document_name": c.document_name, "document_type": c.document_type,
+                            "page_number": c.page_number, "score": c.score,
+                            "chapter_title": c.chapter_title, "section_title": c.section_title,
+                            "excerpt": c.chunk_text} for c in chunks]
+                run_data["retrieved_chunks"] = sources
+                stage = "generation"
+                notify("Evidence found. Waiting for the AI service to answer (quota limits may delay this step)...")
+                answer = self.generate_answer(context, standalone, on_token=on_token)
+                run_data["answer"] = answer
+                issue = getattr(self, "_generation_issue", None)
+                if issue is not None:
+                    return {"answer": answer, "sources": sources, "confidence": None,
+                            "grounded": None, "status": "error", "error_code": issue.code,
+                            "stage": stage, "warnings": warnings}
+                grounded = guardrails.check_grounding(answer, [c.chunk_text for c in chunks])
+                self.memory.add_turn(question, answer)
+                return {"answer": answer, "sources": sources,
+                        "confidence": round(sum(c.score for c in chunks) / len(chunks), 3),
+                        "grounded": grounded, "status": "ok", "warnings": warnings}
+        except Exception as exc:
+            logger.exception("Chat turn failed during %s", stage)
+            issue = classify_error(exc)
+            return {"answer": issue.message, "sources": sources, "confidence": None,
+                    "grounded": None, "status": "error", "error_code": issue.code,
+                    "stage": stage, "warnings": warnings}

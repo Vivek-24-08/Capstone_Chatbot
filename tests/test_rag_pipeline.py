@@ -16,6 +16,7 @@ from rag_pipeline.prompt_templates import NOT_FOUND_MESSAGE
 from rag_pipeline.rag_pipeline import AUTH_ERROR_MESSAGE, SERVICE_UNAVAILABLE_MESSAGE, RAGPipeline
 from rag_pipeline.retrieval_service import RetrievedChunk
 from vector_store import chroma_manager
+from utils.service_errors import classify_error
 
 
 @pytest.fixture
@@ -118,7 +119,7 @@ def test_generate_answer_degrades_gracefully_when_llm_keeps_failing(pipeline, mo
 
     answer = pipeline.generate_answer("some context", "What is my deductible?")
 
-    assert answer == SERVICE_UNAVAILABLE_MESSAGE
+    assert answer == classify_error(RuntimeError("429")).message
 
 
 def test_generate_answer_gives_distinct_message_for_a_dead_api_key(pipeline, monkeypatch):
@@ -143,7 +144,7 @@ def test_generate_answer_gives_distinct_message_for_a_dead_api_key(pipeline, mon
 
     answer = pipeline.generate_answer("some context", "What is my deductible?")
 
-    assert answer == AUTH_ERROR_MESSAGE
+    assert answer == classify_error(RuntimeError("401")).message
     # Fails fast: no retry attempts wasted on a guaranteed-repeat failure.
     assert call_count["n"] == 1
 
@@ -197,7 +198,7 @@ def test_generate_answer_streaming_degrades_gracefully_when_llm_keeps_failing(pi
 
     answer = pipeline.generate_answer("some context", "What is my deductible?", on_token=lambda text: None)
 
-    assert answer == SERVICE_UNAVAILABLE_MESSAGE
+    assert answer == classify_error(RuntimeError("429")).message
 
 
 def test_answer_question_forwards_on_token_through_to_generation(pipeline, monkeypatch):
@@ -235,9 +236,10 @@ def test_answer_question_degrades_gracefully_when_retrieval_fails(pipeline, monk
 
     result = pipeline.answer_question("What is my annual deductible?")
 
-    assert result["answer"] == AUTH_ERROR_MESSAGE
+    assert result["answer"] == classify_error(RuntimeError("401")).message
     assert result["sources"] == []
-    assert result["confidence"] == 0.0
+    assert result["confidence"] is None
+    assert result["status"] == "error"
 
 
 def test_retrieve_with_stages_shows_reranking_promoting_a_chunk(pipeline, monkeypatch):

@@ -27,6 +27,7 @@
 # ==============================================================================
 
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
@@ -35,7 +36,13 @@ from dotenv import load_dotenv
 # copies its KEY=VALUE lines into the process environment (os.environ).
 # This is how we keep the Gemini API key out of source control: it lives
 # in a local .env file (gitignored) that this call picks up at startup.
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
+
+
+def _path_env(name: str, default: str) -> str:
+    path = Path(os.getenv(name, default)).expanduser()
+    return str(path if path.is_absolute() else PROJECT_ROOT / path)
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -71,6 +78,10 @@ class Settings:
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     gemini_chat_model: str = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
     gemini_temperature: float = float(os.getenv("GEMINI_TEMPERATURE", "0.1"))
+    gemini_transport: str = os.getenv("GEMINI_TRANSPORT", "rest")
+    request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "45"))
+    enable_streaming: bool = _bool_env("ENABLE_STREAMING", True)
+    enable_query_rewriting: bool = _bool_env("ENABLE_QUERY_REWRITING", True)
     # Gemini's free tier caps CHAT generation at a much stricter ~5
     # requests/minute (separate from the embedding quota above). Both the
     # chat call and the query-rewrite call draw from this same quota, so
@@ -118,14 +129,14 @@ class Settings:
     )
 
     # -- Vector store (ChromaDB stands in for Databricks Vector Search) ------
-    chroma_persist_dir: str = os.getenv("CHROMA_PERSIST_DIR", "vectorstore_db")
+    chroma_persist_dir: str = _path_env("CHROMA_PERSIST_DIR", "vectorstore_db")
     chroma_collection_name: str = os.getenv("CHROMA_COLLECTION_NAME", "insurance_docs")
 
     # -- Metadata store (SQLite stands in for a Databricks Delta Table) ------
-    metadata_db_path: str = os.getenv("METADATA_DB_PATH", "vectorstore_db/metadata.sqlite")
+    metadata_db_path: str = _path_env("METADATA_DB_PATH", "vectorstore_db/metadata.sqlite")
 
     # -- Document ingestion ---------------------------------------------------
-    pdf_data_dir: str = os.getenv("PDF_DATA_DIR", "data/pdfs")
+    pdf_data_dir: str = _path_env("PDF_DATA_DIR", "data/pdfs")
 
     # -- Chunking ---------------------------------------------------------------
     chunk_size: int = int(os.getenv("CHUNK_SIZE", "1000"))
@@ -144,7 +155,7 @@ class Settings:
     score_threshold: float = float(os.getenv("SCORE_THRESHOLD", "0.3"))
     enable_hybrid_search: bool = _bool_env("ENABLE_HYBRID_SEARCH", True)
     enable_reranking: bool = _bool_env("ENABLE_RERANKING", True)
-    reranker_model: str = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    reranker_model: str = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L6-v2")
 
     # -- Multi-query retrieval (rag_pipeline/multi_query.py) ------------------
     # Off by default: unlike hybrid search and reranking (both local, free),
@@ -167,14 +178,15 @@ class Settings:
     max_history_turns: int = int(os.getenv("MAX_HISTORY_TURNS", "6"))
 
     # -- Observability --------------------------------------------------------------
-    mlflow_tracking_dir: str = os.getenv("MLFLOW_TRACKING_DIR", "mlruns")
+    enable_mlflow: bool = _bool_env("ENABLE_MLFLOW", True)
+    mlflow_tracking_dir: str = _path_env("MLFLOW_TRACKING_DIR", "mlruns")
     mlflow_experiment_name: str = os.getenv("MLFLOW_EXPERIMENT_NAME", "insurance-rag-chatbot")
-    feedback_log_path: str = os.getenv("FEEDBACK_LOG_PATH", "vectorstore_db/feedback.jsonl")
+    feedback_log_path: str = _path_env("FEEDBACK_LOG_PATH", "vectorstore_db/feedback.jsonl")
 
     # -- Logging --------------------------------------------------------------------
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
-    def validate(self) -> None:
+    def validate(self, require_chat: bool = True) -> None:
         """
         Fail loudly and early if required config is missing.
 
@@ -199,7 +211,18 @@ class Settings:
                 f"EMBEDDING_PROVIDER must be 'local', 'gemini', or 'databricks', got "
                 f"'{self.embedding_provider}'"
             )
-        if self.llm_provider == "gemini" and not self.gemini_api_key:
+        if self.gemini_transport not in {"rest", "grpc"}:
+            raise ValueError("GEMINI_TRANSPORT must be rest or grpc.")
+        for name in ("chunk_size", "top_k", "embedding_batch_size", "gemini_embedding_requests_per_minute", "gemini_chat_requests_per_minute", "max_history_turns", "max_hops", "request_timeout_seconds"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name.upper()} must be greater than zero.")
+        if not 0 <= self.chunk_overlap < self.chunk_size:
+            raise ValueError("CHUNK_OVERLAP must be nonnegative and smaller than CHUNK_SIZE.")
+        if not 0 <= self.score_threshold <= 1:
+            raise ValueError("SCORE_THRESHOLD must be between 0 and 1.")
+        if self.multi_query_variants < 0:
+            raise ValueError("MULTI_QUERY_VARIANTS must be nonnegative.")
+        if require_chat and self.llm_provider == "gemini" and not self.gemini_api_key:
             raise ValueError(
                 "GEMINI_API_KEY is not set. Copy .env.example to .env and add "
                 "your key from https://aistudio.google.com/apikey -- or set "

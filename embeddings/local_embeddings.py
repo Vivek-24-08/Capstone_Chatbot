@@ -52,7 +52,7 @@ class LocalEmbeddingProvider(EmbeddingProvider):
             "the Hugging Face Hub and caches it under ~/.cache/huggingface/)",
             model_name,
         )
-        self._model = SentenceTransformer(model_name)
+        self._model = SentenceTransformer(model_name, device="cpu")
         self._dimensions = self._model.get_sentence_embedding_dimension()
         logger.info("Local embedding model ready (%d dimensions)", self._dimensions)
 

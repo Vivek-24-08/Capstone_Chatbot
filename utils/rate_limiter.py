@@ -45,6 +45,8 @@ class SlidingWindowRateLimiter:
     """Paces callers to stay under a configurable requests-per-minute cap."""
 
     def __init__(self, max_per_minute: int, name: str = "requests"):
+        if max_per_minute <= 0:
+            raise ValueError("Rate limit must be greater than zero.")
         self._max_per_minute = max_per_minute
         self._name = name
         self._timestamps: Deque[float] = collections.deque()
@@ -55,6 +57,8 @@ class SlidingWindowRateLimiter:
         Block until `units` more requests can be sent without exceeding the
         per-minute cap, then reserve that capacity.
         """
+        if not 1 <= units <= self._max_per_minute:
+            raise ValueError("Reservation must be positive and cannot exceed the per-minute quota.")
         with self._lock:
             while True:
                 now = time.monotonic()

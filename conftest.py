@@ -94,6 +94,12 @@ def isolated_settings(tmp_path, monkeypatch):
 
     yield
 
+    # Release native Chroma handles before pytest removes temporary databases.
+    if chroma_manager._client is not None:
+        chroma_manager._client._system.stop()
+    from chromadb.api.shared_system_client import SharedSystemClient
+    SharedSystemClient.clear_system_cache()
+
 
 @pytest.fixture
 def sample_pdf(tmp_path) -> Path:

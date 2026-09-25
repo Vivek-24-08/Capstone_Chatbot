@@ -28,7 +28,7 @@
 # ==============================================================================
 
 import json
-import os
+from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional
 
@@ -44,7 +44,7 @@ def log_feedback(
     sources: List[Dict[str, Any]],
     rating: str,
     comment: Optional[str] = None,
-) -> None:
+) -> bool:
     """
     Append one feedback record to the local feedback log.
 
@@ -55,7 +55,6 @@ def log_feedback(
         rating:   "up" or "down".
         comment:  optional free-text detail from the user.
     """
-    os.makedirs(os.path.dirname(settings.feedback_log_path), exist_ok=True)
 
     record = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -67,10 +66,14 @@ def log_feedback(
     }
 
     try:
+        Path(settings.feedback_log_path).parent.mkdir(parents=True, exist_ok=True)
         with open(settings.feedback_log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
         logger.info("Logged '%s' feedback for question: %.60s...", rating, question)
+        return True
     except OSError:
         # Feedback logging should never crash the chat experience -- a
         # failed write here is annoying but not user-facing.
         logger.exception("Failed to write feedback record")
+
+        return False

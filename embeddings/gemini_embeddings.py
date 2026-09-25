@@ -51,7 +51,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
     def __init__(self, model_name: str, api_key: str):
         import google.generativeai as genai
 
-        genai.configure(api_key=api_key)
+        genai.configure(api_key=api_key, transport=settings.gemini_transport)
         self._genai = genai
         self._model_name = model_name
         self._rate_limiter = SlidingWindowRateLimiter(
@@ -78,6 +78,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
                 model=self._model_name,
                 content=texts,
                 task_type=task_type,
+                request_options={"timeout": settings.request_timeout_seconds},
             )
         except Exception:
             logger.exception(
@@ -89,7 +90,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         return response["embedding"]
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        batch_size = settings.embedding_batch_size
+        batch_size = min(settings.embedding_batch_size, settings.gemini_embedding_requests_per_minute)
         all_vectors: List[List[float]] = []
         for start in range(0, len(texts), batch_size):
             batch = texts[start : start + batch_size]

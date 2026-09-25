@@ -3,7 +3,13 @@
 A Retrieval-Augmented Generation (RAG) chatbot that answers member, provider,
 and policy questions using your official insurance plan documents (Evidence
 of Coverage, Summary of Benefits, and related policy manuals). Built to run
-entirely on a single machine — no cloud infrastructure required to try it out.
+with a local application and local document storage. Answer generation uses the
+configured Gemini or Databricks service; local embeddings do not make chat offline.
+
+**Sandbox reliability update:** installation and launch commands are unchanged.
+See [SANDBOX_GUIDE.md](SANDBOX_GUIDE.md) for connection checks, error categories,
+safe index updates, and the steps to use when documents ingest but chat fails.
+Optional diagnostics: `python -m scripts.doctor --probe` (makes small API requests).
 
 ## 1. Architecture
 
@@ -111,17 +117,15 @@ EMBEDDING_PROVIDER=local     # free, offline, sentence-transformers (default)
 EMBEDDING_PROVIDER=gemini    # hosted, uses your GEMINI_API_KEY, no model download
 ```
 
-**Important:** switching providers changes the vector space. Re-run
-`python -m scripts.ingest --force` equivalent (or simply delete
-`vectorstore_db/` and re-run `python -m scripts.ingest`) after switching —
-old vectors from one provider are not comparable to query vectors from the
-other.
+**Important:** switching providers changes the vector space. Ingestion now detects
+provider/model and chunking changes and builds a fresh collection before switching
+the active index. `python -m scripts.ingest --force` also requests a full rebuild.
+Do not manually delete the database to switch providers.
 
 ## 5. Choosing which local embedding model to use
 
-`LOCAL_EMBEDDING_MODEL` defaults to `all-MiniLM-L6-v2` — the smallest and
-fastest free CPU embedding model, chosen for "run locally as easily as
-possible." It is not the most accurate option available. Rather than trust
+`LOCAL_EMBEDDING_MODEL` defaults to `sentence-transformers/all-mpnet-base-v2`.
+You can compare it with smaller CPU models using the evaluation below. Rather than trust
 a public leaderboard (which measures general web/Wikipedia text, not
 insurance-specific language), this project includes its own small
 MTEB-style evaluation tool that measures retrieval quality against your

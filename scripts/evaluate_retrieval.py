@@ -149,7 +149,8 @@ def _evaluate_one(pipeline: RAGPipeline, eval_q: EvalQuestion) -> QueryResult:
         question=eval_q.question,
         expected_file=eval_q.expected_file,
         expected_page=eval_q.expected_page,
-        before_reranking=_stage_metrics(stages.before_reranking, eval_q),
+        # Compare equal retrieval depths; truncation alone is not reranker damage.
+        before_reranking=_stage_metrics(stages.before_reranking[:settings.top_k], eval_q),
         after_reranking=_stage_metrics(stages.after_reranking, eval_q),
         retrieved_after_reranking=[
             {"document_name": c.document_name, "page_number": c.page_number, "score": round(c.score, 4)}
@@ -269,14 +270,14 @@ def main() -> None:
     serialized = json.dumps(payload, indent=2)
 
     # Timestamped copy: local, disposable run history (gitignored).
-    (RESULTS_DIR / f"retrieval_eval_{timestamp}.json").write_text(serialized)
+    (RESULTS_DIR / f"retrieval_eval_{timestamp}.json").write_text(serialized, encoding="utf-8")
 
     # latest.json: the one snapshot meant to be committed and reviewed in
     # git -- see .gitignore. It's just overwritten on every run; nothing
     # forces it to be re-run automatically, so it's only ever as fresh as
     # the last time someone deliberately ran this script and committed the
     # change (e.g. after editing data/pdfs/ or RERANKER_MODEL/EMBEDDING_PROVIDER).
-    LATEST_RESULTS_PATH.write_text(serialized)
+    LATEST_RESULTS_PATH.write_text(serialized, encoding="utf-8")
 
     print(f"\nFull per-query before/after results saved to {RESULTS_DIR / f'retrieval_eval_{timestamp}.json'}")
     print(f"Committed snapshot updated at {LATEST_RESULTS_PATH} -- `git add` and commit it to record this run.")

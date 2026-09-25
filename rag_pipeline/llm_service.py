@@ -69,20 +69,20 @@ def get_chat_model():
         _llm_instance = ChatDatabricks(
             endpoint=settings.databricks_llm_endpoint,
             temperature=settings.databricks_temperature,
-            # host/token are only passed when explicitly set; leaving them
-            # None lets the Databricks SDK fall back to the ambient
-            # workspace identity when running inside Databricks itself.
-            host=settings.databricks_host or None,
-            token=settings.databricks_token or None,
+            # This pinned integration uses MLflow's Databricks auth resolution.
+            # .env is already loaded; host/token are not constructor fields.
         )
     elif settings.llm_provider == "gemini":
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        from rag_pipeline.gemini_chat import BoundedGeminiChat
 
         logger.info("Using Gemini chat model (model='%s')", settings.gemini_chat_model)
-        _llm_instance = ChatGoogleGenerativeAI(
+        _llm_instance = BoundedGeminiChat(
             model=settings.gemini_chat_model,
             google_api_key=settings.gemini_api_key,
             temperature=settings.gemini_temperature,
+            timeout=settings.request_timeout_seconds,
+            max_retries=0,
+            transport=settings.gemini_transport,
         )
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: '{settings.llm_provider}'")

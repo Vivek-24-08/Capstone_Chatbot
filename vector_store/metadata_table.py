@@ -55,6 +55,7 @@
 import json
 import os
 import sqlite3
+from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional
@@ -98,7 +99,7 @@ def _connection() -> Iterator[sqlite3.Connection]:
     close it -- a context manager guarantees the connection (and any
     uncommitted transaction) is cleaned up even if a query raises.
     """
-    os.makedirs(os.path.dirname(settings.metadata_db_path), exist_ok=True)
+    Path(settings.metadata_db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(settings.metadata_db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -114,6 +115,11 @@ def create_tables() -> None:
         conn.execute(_CREATE_CHUNK_METADATA_SQL)
         conn.execute(_CREATE_INGESTED_FILES_SQL)
         conn.execute(_INDEX_SQL)
+        conn.execute("CREATE TABLE IF NOT EXISTS index_state (name TEXT PRIMARY KEY, active_collection TEXT NOT NULL, fingerprint TEXT NOT NULL)")
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(chunk_metadata)")}
+        for column in ("chapter_title", "section_title"):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE chunk_metadata ADD COLUMN {column} TEXT")
     logger.info("Metadata tables ready at '%s'", settings.metadata_db_path)
 
 
@@ -202,3 +208,35 @@ def upsert_ingested_file(file_name: str, file_hash: str, chunk_count: int) -> No
             (file_name, file_hash, datetime.now(timezone.utc).isoformat(), chunk_count),
         )
     logger.info("Recorded ingestion of '%s' (%d chunks)", file_name, chunk_count)
+
+
+def get_index_state():
+    with _connection() as conn:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='index_state'").fetchone():
+            return None
+        row = conn.execute("SELECT * FROM index_state WHERE name = ?", (settings.chroma_collection_name,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_ingested_files():
+    with _connection() as conn:
+        return {row["file_name"]: dict(row) for row in conn.execute("SELECT * FROM ingested_files")}
+
+
+def publish_generation(collection_name, fingerprint, chunks, embeddings, files):
+    """Publish a fully built collection and its audit data in one transaction."""
+    if len(chunks) != len(embeddings):
+        raise ValueError("Chunk and embedding counts differ.")
+    rows = [(c.chunk_id, c.file_name, c.document_type, c.page_number, c.chunk_text,
+             json.dumps(list(vector)), c.created_timestamp, c.chapter_title, c.section_title)
+            for c, vector in zip(chunks, embeddings)]
+    with _connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM chunk_metadata")
+        conn.execute("DELETE FROM ingested_files")
+        conn.executemany("INSERT INTO chunk_metadata (chunk_id, document_name, document_type, page_number, chunk_text, embedding_vector, created_timestamp, chapter_title, section_title) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        conn.executemany("INSERT INTO ingested_files VALUES (?, ?, ?, ?)",
+                         [(name, info["hash"], datetime.now(timezone.utc).isoformat(), info["count"])
+                          for name, info in files.items()])
+        conn.execute("INSERT OR REPLACE INTO index_state VALUES (?, ?, ?)",
+                     (settings.chroma_collection_name, collection_name, fingerprint))

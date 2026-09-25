@@ -123,9 +123,13 @@ def _hybrid_rescore(query: str, candidates: List[RetrievedChunk]) -> List[Retrie
     bm25 = BM25Okapi(tokenized_corpus)
     bm25_scores = bm25.get_scores(query.lower().split())
 
-    max_bm25 = max(bm25_scores) if max(bm25_scores) > 0 else 1.0
+    # BM25 may be negative for frequent terms in tiny candidate pools. Treat
+    # these as no keyword signal rather than penalizing a good vector match.
+    max_bm25 = max(bm25_scores)
+    if max_bm25 <= 0:
+        return sorted(candidates, key=lambda c: c.score, reverse=True)
     for candidate, raw_bm25 in zip(candidates, bm25_scores):
-        normalized_bm25 = raw_bm25 / max_bm25
+        normalized_bm25 = max(0.0, raw_bm25) / max_bm25
         candidate.score = (0.7 * candidate.score) + (0.3 * normalized_bm25)
 
     return sorted(candidates, key=lambda c: c.score, reverse=True)

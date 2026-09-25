@@ -62,15 +62,24 @@ def test_get_chat_model_dispatches_to_gemini(monkeypatch):
 
     model = llm_service.get_chat_model()
 
-    assert type(model).__name__ == "ChatGoogleGenerativeAI"
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    assert isinstance(model, ChatGoogleGenerativeAI)
 
 
 def test_get_chat_model_dispatches_to_databricks(monkeypatch):
     import rag_pipeline.llm_service as llm_service
+    import langchain_databricks
 
     monkeypatch.setattr(settings, "llm_provider", "databricks")
     monkeypatch.setattr(llm_service, "_llm_instance", None)
 
+    # This is a dispatch test, not a live workspace authentication test.
+    class ChatDatabricks:
+        def __init__(self, **kwargs):
+            self.options = kwargs
+    monkeypatch.setattr(langchain_databricks, "ChatDatabricks", ChatDatabricks)
+
     model = llm_service.get_chat_model()
 
     assert type(model).__name__ == "ChatDatabricks"
+    assert model.options["endpoint"] == settings.databricks_llm_endpoint
