@@ -72,17 +72,16 @@ with `mlflow ui` from the project root.
 
 ## 2. Why these choices (and what changed from a generic template)
 
-This project reconciles a request that mixed two incompatible worlds: a
-Databricks/Azure-OpenAI-flavored architecture spec, and an actual ask to
-"run locally as easily as possible" with a Gemini API key. Local equivalents
-were used everywhere a heavy managed service was implied:
+This project combines a Databricks/Azure-OpenAI-flavored architecture with a
+local-first application. OpenRouter supplies the chat model through one
+OpenAI-compatible endpoint, while local equivalents replace managed storage:
 
 | Spec asked for | This project uses | Why |
 |---|---|---|
 | Databricks Vector Search | **ChromaDB** (on-disk) | Zero setup, no cluster, same "index + similarity search" role |
 | Databricks Delta Table | **SQLite** (`vector_store/metadata_table.py`) | Same schema, same structured/queryable role, zero server |
 | Databricks Secret Scope | **`.env` file** (gitignored) | `config/settings.py` isolates all secret reads to one file, so swapping the *source* later is a one-file change |
-| Azure OpenAI / `text-embedding-3-large` | **Pluggable provider**: local `sentence-transformers` (free/offline) or Gemini `gemini-embedding-001` | Matches the actual Gemini-only key you have; local is the zero-cost default, Gemini is the Phase 2 / sandbox-compatible option |
+| Azure OpenAI / `text-embedding-3-large` | **Pluggable embeddings**: local `sentence-transformers`, Gemini, or Databricks | Local embeddings are the default and do not consume OpenRouter credits |
 | MLflow on a Databricks tracking server | **MLflow, local file store** (`mlruns/`) | Identical `mlflow.log_*` API; only the tracking URI differs |
 
 ## 3. Setup (unrestricted machine — recommended path)
@@ -99,8 +98,8 @@ pip install -r requirements.txt
 #   local embeddings and reranking only ever run on CPU here.
 
 cp .env.example .env
-# Edit .env and set GEMINI_API_KEY (get one free at https://aistudio.google.com/apikey)
-# Leave EMBEDDING_PROVIDER=local for a fully free embedding pipeline.
+# Edit .env and set OPENROUTER_API_KEY and an exact OPENROUTER_MODEL slug.
+# Leave EMBEDDING_PROVIDER=local so indexing does not consume API credits.
 
 python -m scripts.ingest           # one-time: indexes data/pdfs/*.pdf
 streamlit run frontend/app.py      # opens the chat UI in your browser
@@ -246,10 +245,9 @@ laptop/server with open internet access):
   and serve HTTP" (`curl localhost:8501`), not a real interactive
   walkthrough. A live, interactive test of the chat UI should be done on
   your own machine or any environment with normal port access.
-- Gemini model names move fast. If `GEMINI_CHAT_MODEL` or
-  `GEMINI_EMBEDDING_MODEL` ever 404s with a "no longer available" message,
-  call `GET https://generativelanguage.googleapis.com/v1beta/models?key=YOUR_KEY`
-  to see current model names and update `.env`.
+- OpenRouter model availability depends on your account and provider routing.
+  If `OPENROUTER_MODEL` is rejected, select an exact model slug from the
+  OpenRouter model catalog and update `.env`.
 - The Gemini free tier caps embedding calls at roughly 100/minute, and each
   text in a batch counts individually against that quota. `scripts/ingest.py`
   paces itself under this limit automatically when `EMBEDDING_PROVIDER=gemini`
@@ -266,23 +264,24 @@ pytest
 The full suite (`tests/`) runs offline and deterministically: `conftest.py`
 swaps in a fake, hash-based embedding provider and points every on-disk
 store (Chroma, SQLite, MLflow) at a fresh temp directory per test, and the
-one test that reaches "the LLM" mocks `ChatGoogleGenerativeAI.invoke`
-directly — no real API key or network call is exercised by the test suite.
+tests that reach chat models use controlled substitutes — no real API key or
+network call is exercised by the test suite.
 
 ## 9. Enhancements already built in
 
 - **Conversational memory** (`rag_pipeline/memory.py`) — capped chat history for natural follow-ups.
 - **Hybrid search** (`rag_pipeline/retrieval_service.py`) — vector + BM25 keyword blend, toggle via `ENABLE_HYBRID_SEARCH`.
+- **Intelligent search routing** (`rag_pipeline/search_intelligence.py`) — detects insurance intent, expands the keyword branch with domain terms, and adjusts semantic/keyword weights without adding an API call.
 - **Query rewriting** (`rag_pipeline/query_rewriter.py`) — follow-ups rewritten into standalone questions before retrieval.
 - **Reranking** (`rag_pipeline/reranker.py`) — optional CPU cross-encoder re-scoring, toggle via `ENABLE_RERANKING`.
 - **Feedback logging** (`utils/feedback_logger.py`) — 👍/👎 buttons in the UI append to a local `.jsonl` file.
 - **Guardrails** (`rag_pipeline/guardrails.py`) — prompt-injection denylist + lexical grounding check on every answer.
 - **Source citations + confidence** — every answer shows an expandable source panel and a retrieval-based confidence score.
 - **Follow-up handling** — covered jointly by memory + query rewriting above.
-- **Multi-query retrieval** (`rag_pipeline/multi_query.py`) — searches with several LLM-generated paraphrasings of the question and fuses the results via reciprocal rank fusion, so retrieval isn't only as good as the user's exact wording. Off by default (`ENABLE_MULTI_QUERY`) — costs one extra Gemini chat call per question.
+- **Multi-query retrieval** (`rag_pipeline/multi_query.py`) — searches with several LLM-generated paraphrasings of the question and fuses the results via reciprocal rank fusion, so retrieval isn't only as good as the user's exact wording. Off by default (`ENABLE_MULTI_QUERY`) because it costs an extra chat call per question.
 - **Multi-hop retrieval** (`rag_pipeline/multi_hop.py`) — after the first retrieval pass, lets the model ask itself a follow-up search query when a compound question needs a second, different piece of information, then merges both rounds' chunks before answering. Off by default (`ENABLE_MULTI_HOP`), bounded by `MAX_HOPS`.
 - **Retrieval evaluation** (`utils/retrieval_metrics.py`, `scripts/evaluate_embeddings.py`, `scripts/evaluate_retrieval.py`) — Recall@K, Precision@K, NDCG@K, and MRR against hand-labeled ground truth, for both a candidate embedding model in isolation and the full deployed pipeline — see section 5.
-- **Streaming answers** (`rag_pipeline/rag_pipeline.py`'s `on_token` callback, used in `frontend/app.py`) — the answer renders token-by-token as Gemini generates it, instead of appearing all at once after the full response completes. Improves perceived latency only (same total generation time, same token cost); retrieval, grounding, memory, and MLflow logging are unaffected.
+- **Streaming answers** (`rag_pipeline/rag_pipeline.py`'s `on_token` callback, used in `frontend/app.py`) — the answer renders token-by-token as OpenRouter returns it, instead of appearing all at once after the full response completes. This improves perceived latency only; retrieval, grounding, memory, and MLflow logging are unaffected.
 - **Concurrent multi-query retrieval** (`rag_pipeline.py`'s `retrieve_with_stages()`) — when `ENABLE_MULTI_QUERY` is on, its independent per-variant searches run in a thread pool instead of one after another, cutting that feature's added latency roughly to the slowest single search instead of their sum.
 
 ## 10. Path to a real Databricks/production deployment
