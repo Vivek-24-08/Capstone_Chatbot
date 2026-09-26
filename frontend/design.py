@@ -4,9 +4,45 @@ from pathlib import Path
 import streamlit as st
 
 
-def apply_design():
+MIN_UI_SCALE = 0.85
+MAX_UI_SCALE = 1.35
+DEFAULT_UI_SCALE = 1.0
+
+
+def clamp_ui_scale(value):
+    """Keep application zoom readable and prevent broken layouts."""
+    return round(min(MAX_UI_SCALE, max(MIN_UI_SCALE, float(value))), 2)
+
+
+def ensure_ui_preferences(state):
+    defaults = {
+        "ui_scale": DEFAULT_UI_SCALE,
+        "ui_high_contrast": False,
+        "ui_reduce_motion": False,
+        "ui_expand_sources": False,
+    }
+    for name, value in defaults.items():
+        if name not in state:
+            state[name] = value
+    state["ui_scale"] = clamp_ui_scale(state["ui_scale"])
+
+
+def apply_design(state):
+    ensure_ui_preferences(state)
     css = Path(__file__).with_name("style.css").read_text(encoding="utf-8")
-    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+    scale = clamp_ui_scale(state["ui_scale"])
+    accessibility = [f"html {{font-size: {16 * scale:.2f}px;}}"]
+    if state["ui_high_contrast"]:
+        accessibility.append("""
+        .stApp {background: #ffffff; color: #102f34;}
+        [data-testid="stSidebar"] {background: #f4f8f7; border-right: 2px solid #245f58;}
+        [data-testid="stChatMessage"], [data-testid="stVerticalBlockBorderWrapper"] {border: 2px solid #416d67 !important;}
+        .cg-status-row {border-bottom: 2px solid #416d67;}
+        .cg-status-row small, .cg-topic p, .cg-conversation-title p {opacity: 1;}
+        """)
+    if state["ui_reduce_motion"]:
+        accessibility.append("*, *::before, *::after {animation: none !important; transition: none !important; scroll-behavior: auto !important;}")
+    st.markdown(f"<style>{css}{''.join(accessibility)}</style>", unsafe_allow_html=True)
 
 
 def render_header(in_conversation):

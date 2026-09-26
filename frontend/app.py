@@ -5,9 +5,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import streamlit as st
 
 st.set_page_config(page_title="CareGuide | Insurance Assistant", page_icon="🩺", layout="wide")
-from frontend.design import apply_design, render_header, render_status, conversation_export
+from frontend.design import (
+    DEFAULT_UI_SCALE,
+    apply_design,
+    clamp_ui_scale,
+    conversation_export,
+    ensure_ui_preferences,
+    render_header,
+    render_status,
+)
 
-apply_design()
+ensure_ui_preferences(st.session_state)
+apply_design(st.session_state)
 try:
     from config.settings import settings
     from frontend.session import get_session_pipeline
@@ -25,6 +34,25 @@ def load_pipeline():
 @st.cache_resource(show_spinner=False)
 def ensure_documents_ingested():
     return run_ingestion()
+
+def render_display_controls():
+    with st.expander("Display & accessibility"):
+        st.caption("APPLICATION ZOOM")
+        smaller, reset, larger = st.columns(3)
+        if smaller.button("A−", help="Zoom out", use_container_width=True):
+            st.session_state.ui_scale = clamp_ui_scale(st.session_state.ui_scale - 0.1)
+            st.rerun()
+        if reset.button("100%", help="Reset application zoom", use_container_width=True):
+            st.session_state.ui_scale = DEFAULT_UI_SCALE
+            st.rerun()
+        if larger.button("A+", help="Zoom in", use_container_width=True):
+            st.session_state.ui_scale = clamp_ui_scale(st.session_state.ui_scale + 0.1)
+            st.rerun()
+        st.caption(f"Current size: {st.session_state.ui_scale:.0%}")
+        st.checkbox("High contrast", key="ui_high_contrast")
+        st.checkbox("Reduce motion", key="ui_reduce_motion")
+        st.checkbox("Keep source evidence open", key="ui_expand_sources")
+        st.caption("Browser shortcuts also work: Ctrl/Cmd + plus or minus, and Ctrl/Cmd + 0 to reset.")
 
 def render_sidebar():
     with st.sidebar:
@@ -51,6 +79,7 @@ def render_sidebar():
                 st.caption("Index is not ready yet.")
         st.markdown("**A little guidance**")
         st.caption("Ask one clear question at a time. Mention your plan or benefit when possible, then explore the cited evidence.")
+        render_display_controls()
         with st.expander("Setup and connection checks"):
             st.caption(f"Chat provider: {settings.llm_provider}")
             st.caption(f"Embeddings: {settings.embedding_provider}")
@@ -77,7 +106,10 @@ def render_sidebar():
 def render_sources(sources):
     if not sources:
         return
-    with st.expander(f"▤  Sources & evidence · {len(sources)} passages"):
+    with st.expander(
+        f"▤  Sources & evidence · {len(sources)} passages",
+        expanded=st.session_state.get("ui_expand_sources", False),
+    ):
         for number, source in enumerate(sources, 1):
             with st.container(border=True):
                 st.write(f"[{number}] {source['document_name']}")

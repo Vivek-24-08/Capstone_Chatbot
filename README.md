@@ -330,6 +330,7 @@ network call is exercised by the test suite.
 - **Multi-hop retrieval** (`rag_pipeline/multi_hop.py`) — after the first retrieval pass, lets the model ask itself a follow-up search query when a compound question needs a second, different piece of information, then merges both rounds' chunks before answering. Off by default (`ENABLE_MULTI_HOP`), bounded by `MAX_HOPS`.
 - **Retrieval evaluation** (`utils/retrieval_metrics.py`, `scripts/evaluate_embeddings.py`, `scripts/evaluate_retrieval.py`) — Recall@K, Precision@K, NDCG@K, and MRR against hand-labeled ground truth, for both a candidate embedding model in isolation and the full deployed pipeline — see section 5.
 - **Streaming answers** (`rag_pipeline/rag_pipeline.py`'s `on_token` callback, used in `frontend/app.py`) — the answer renders token-by-token as OpenRouter returns it, instead of appearing all at once after the full response completes. This improves perceived latency only; retrieval, grounding, memory, and MLflow logging are unaffected.
+- **Accessible display controls** — application zoom from 85–135%, high contrast, reduced motion, and optionally expanded evidence are available in the sidebar. Browser zoom shortcuts continue to work.
 - **Concurrent multi-query retrieval** (`rag_pipeline.py`'s `retrieve_with_stages()`) — when `ENABLE_MULTI_QUERY` is on, its independent per-variant searches run in a thread pool instead of one after another, cutting that feature's added latency roughly to the slowest single search instead of their sum.
 
 ## 10. Path to a real Databricks/production deployment
