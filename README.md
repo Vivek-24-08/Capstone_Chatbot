@@ -43,6 +43,7 @@ Optional diagnostics: `python -m scripts.doctor --probe` (makes small API reques
 │        ▼                                                                 │
 │  rag_pipeline/                                                          │
 │    retrieval_service.py    top-K + score threshold + hybrid (BM25)      │
+│    search_intelligence.py  insurance intent + query expansion + weights │
 │    multi_query.py           optional: paraphrase + fuse (RRF)           │
 │    reranker.py              optional cross-encoder re-scoring           │
 │    query_rewriter.py        follow-up question -> standalone question   │
@@ -103,6 +104,53 @@ cp .env.example .env
 
 python -m scripts.ingest           # one-time: indexes data/pdfs/*.pdf
 streamlit run frontend/app.py      # opens the chat UI in your browser
+```
+
+### VS Code sandbox setup
+
+Run these commands from the VS Code Bash terminal. There must be a space after
+`-la`; the correct command is `ls -la .env*`, not `ls -la.env`.
+
+```bash
+cd ~/Capstone_Chatbot_OpenRouter
+
+# See whether the template and local configuration already exist.
+ls -la .env*
+
+# Create .env only when the preceding output does not already show .env.
+cp .env.example .env
+
+# Confirm both files exist. This lists names and metadata, not their contents.
+ls -la .env*
+
+# Open the local configuration in VS Code.
+code .env
+```
+
+If `code .env` is unavailable, refresh the VS Code Explorer and click `.env`.
+Set these values and save with Ctrl+S:
+
+```dotenv
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=your_actual_openrouter_key
+OPENROUTER_MODEL=openai/gpt-4o-mini
+EMBEDDING_PROVIDER=local
+ENABLE_INTELLIGENT_SEARCH=true
+```
+
+Do not use `cat .env` or `grep OPENROUTER_API_KEY .env`, because those commands
+print the secret. Verify the configuration without displaying it:
+
+```bash
+python3 -c "from config.settings import settings; print('OpenRouter configured:', bool(settings.openrouter_api_key and settings.openrouter_model))"
+```
+
+The result should be `OpenRouter configured: True`. Then continue:
+
+```bash
+python3 -m scripts.ingest
+python3 -m scripts.doctor --probe
+streamlit run frontend/app.py
 ```
 
 Add your own PDFs by dropping them into `data/pdfs/` and re-running

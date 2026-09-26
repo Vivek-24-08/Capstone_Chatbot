@@ -4,9 +4,25 @@ This copy keeps the same installation, ingestion, and Streamlit commands as
 CareGuide. OpenRouter generates chat answers. Embeddings run locally by default,
 so indexing documents does not consume OpenRouter credits.
 
-## Configure
+## Configure in a VS Code Bash terminal
 
-Copy `.env.example` to `.env`, then set:
+From the cloned project directory, check the hidden configuration files. The
+space in `ls -la .env*` is required.
+
+```bash
+ls -la .env*
+```
+
+If `.env` is not listed, create it from the template:
+
+```bash
+cp .env.example .env
+ls -la .env*
+code .env
+```
+
+If `code .env` is unavailable, refresh the VS Code Explorer and open `.env`
+there. Add your key to `.env`, not `.env.example`:
 
 ```dotenv
 LLM_PROVIDER=openrouter
@@ -18,6 +34,13 @@ ENABLE_INTELLIGENT_SEARCH=true
 
 Use an exact model slug enabled for your OpenRouter account and approved by your
 organization. Never commit `.env`.
+
+Do not run `cat .env` or grep the key, because that displays the secret in the
+terminal. This confirms that both required values loaded without printing them:
+
+```bash
+python3 -c "from config.settings import settings; print('OpenRouter configured:', bool(settings.openrouter_api_key and settings.openrouter_model))"
+```
 
 ## Run
 
