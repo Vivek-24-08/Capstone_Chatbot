@@ -31,7 +31,7 @@ def run_checks(probe=False):
     from vector_store import chroma_manager
     check("Vector index", lambda: f"{chroma_manager.count()} indexed chunks")
     check("Index configuration", chroma_manager.assert_compatible_index)
-    for package in ("streamlit", "chromadb", "langchain-google-genai", "sentence-transformers"):
+    for package in ("streamlit", "chromadb", "langchain-openai", "sentence-transformers"):
         check(f"Package {package}", lambda p=package: importlib.metadata.version(p))
     if probe:
         from embeddings.embedding_service import generate_query_embedding

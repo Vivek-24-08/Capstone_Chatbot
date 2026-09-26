@@ -11,6 +11,7 @@ def response():
 
 
 def test_normal_chat_passes_deadline_to_transport(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "gemini")
     calls = []
     def generate(**kwargs):
         calls.append(kwargs)
@@ -23,6 +24,7 @@ def test_normal_chat_passes_deadline_to_transport(monkeypatch):
 
 
 def test_stream_passes_deadline_to_transport(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "gemini")
     calls = []
     def stream(**kwargs):
         calls.append(kwargs)

@@ -11,10 +11,11 @@ APP = str(Path(__file__).resolve().parents[1] / "frontend" / "app.py")
 
 def test_missing_key_shows_setup_message_not_traceback(monkeypatch):
     from streamlit.testing.v1 import AppTest
-    monkeypatch.setattr(settings, "gemini_api_key", "")
+    monkeypatch.setattr(settings, "llm_provider", "openrouter")
+    monkeypatch.setattr(settings, "openrouter_api_key", "")
     app = AppTest.from_file(APP, default_timeout=30).run()
     assert not app.exception
-    assert any("GEMINI_API_KEY" in item.value for item in app.error)
+    assert any("OPENROUTER_API_KEY" in item.value for item in app.error)
 
 
 def test_ui_returns_streamed_answer_and_evidence(sample_pdf, monkeypatch):

@@ -24,6 +24,37 @@ def test_validate_requires_gemini_key_when_llm_provider_is_gemini(monkeypatch):
         settings.validate()
 
 
+def test_validate_requires_openrouter_key_and_model(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "openrouter")
+    monkeypatch.setattr(settings, "embedding_provider", "local")
+    monkeypatch.setattr(settings, "openrouter_api_key", "")
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        settings.validate()
+
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key")
+    monkeypatch.setattr(settings, "openrouter_model", "")
+    with pytest.raises(ValueError, match="OPENROUTER_MODEL"):
+        settings.validate()
+
+
+def test_get_chat_model_dispatches_to_openrouter(monkeypatch):
+    import rag_pipeline.llm_service as llm_service
+    import langchain_openai
+
+    monkeypatch.setattr(settings, "llm_provider", "openrouter")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key-not-real")
+    monkeypatch.setattr(settings, "openrouter_model", "openai/gpt-4o-mini")
+    monkeypatch.setattr(llm_service, "_llm_instance", None)
+
+    class ChatOpenAI:
+        def __init__(self, **kwargs):
+            self.options = kwargs
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", ChatOpenAI)
+    model = llm_service.get_chat_model()
+    assert model.options["model"] == "openai/gpt-4o-mini"
+    assert model.options["base_url"] == "https://openrouter.ai/api/v1"
+
+
 def test_validate_passes_fully_keyless_when_both_providers_are_databricks(monkeypatch):
     # This is the "fully replace Gemini" configuration: no Gemini key
     # anywhere, both chat and embeddings routed to Databricks.

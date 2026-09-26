@@ -36,10 +36,12 @@
 # ==============================================================================
 
 from dataclasses import dataclass
+import re
 from typing import Any, Dict, List, Optional
 
 from config.settings import settings
 from embeddings.embedding_service import generate_query_embedding
+from rag_pipeline.search_intelligence import SearchProfile, build_search_profile
 from utils.logging_utils import get_logger
 from vector_store import chroma_manager
 
@@ -104,7 +106,11 @@ def _vector_search(query: str, top_k: int) -> List[RetrievedChunk]:
     return results
 
 
-def _hybrid_rescore(query: str, candidates: List[RetrievedChunk]) -> List[RetrievedChunk]:
+def _hybrid_rescore(
+    query: str,
+    candidates: List[RetrievedChunk],
+    profile: Optional[SearchProfile] = None,
+) -> List[RetrievedChunk]:
     """
     Blend vector similarity with a BM25 keyword score computed over just the
     candidate set (not the whole corpus -- BM25 here is a fast local
@@ -119,9 +125,11 @@ def _hybrid_rescore(query: str, candidates: List[RetrievedChunk]) -> List[Retrie
     if not candidates:
         return candidates
 
-    tokenized_corpus = [c.chunk_text.lower().split() for c in candidates]
+    profile = profile or build_search_profile(query, settings.enable_intelligent_search)
+    tokenizer = lambda text: re.findall(r"[a-z0-9$%.-]+", text.lower())
+    tokenized_corpus = [tokenizer(c.chunk_text) for c in candidates]
     bm25 = BM25Okapi(tokenized_corpus)
-    bm25_scores = bm25.get_scores(query.lower().split())
+    bm25_scores = bm25.get_scores(tokenizer(profile.keyword_query))
 
     # BM25 may be negative for frequent terms in tiny candidate pools. Treat
     # these as no keyword signal rather than penalizing a good vector match.
@@ -130,7 +138,10 @@ def _hybrid_rescore(query: str, candidates: List[RetrievedChunk]) -> List[Retrie
         return sorted(candidates, key=lambda c: c.score, reverse=True)
     for candidate, raw_bm25 in zip(candidates, bm25_scores):
         normalized_bm25 = max(0.0, raw_bm25) / max_bm25
-        candidate.score = (0.7 * candidate.score) + (0.3 * normalized_bm25)
+        candidate.score = (
+            profile.vector_weight * candidate.score
+            + profile.keyword_weight * normalized_bm25
+        )
 
     return sorted(candidates, key=lambda c: c.score, reverse=True)
 
@@ -169,10 +180,11 @@ def retrieve(
     # already-truncated list of `top_k` items.
     fetch_k = top_k * 3 if settings.enable_hybrid_search or settings.enable_reranking else top_k
 
+    profile = build_search_profile(question, settings.enable_intelligent_search)
     candidates = _vector_search(question, top_k=fetch_k)
 
     if settings.enable_hybrid_search:
-        candidates = _hybrid_rescore(question, candidates)
+        candidates = _hybrid_rescore(question, candidates, profile)
 
     filtered = [c for c in candidates if c.score >= score_threshold]
 
@@ -191,12 +203,13 @@ def retrieve(
 
     logger.info(
         "Retrieved %d candidate chunks for question (top_k=%d, threshold=%.2f, "
-        "hybrid=%s, reranking=%s)",
+        "hybrid=%s, reranking=%s, intent=%s)",
         len(results),
         top_k,
         score_threshold,
         settings.enable_hybrid_search,
         settings.enable_reranking,
+        profile.intent,
     )
     return results
 

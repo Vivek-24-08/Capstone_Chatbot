@@ -35,6 +35,7 @@ streamlit==1.38.0
 # --- LLM + Embeddings (Gemini) -------------------------------------------------
 google-generativeai==0.8.3        # Gemini chat + embeddings SDK
 langchain-google-genai==2.0.4     # LangChain <-> Gemini integration
+langchain-openai==0.2.5           # OpenRouter via its OpenAI-compatible endpoint
 
 # --- LLM + Embeddings (Databricks -- fully keyless when run inside Databricks) ---
 # Pinned deliberately: the newer "databricks-langchain" package pulls in

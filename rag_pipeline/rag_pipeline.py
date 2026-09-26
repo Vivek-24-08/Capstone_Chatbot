@@ -402,7 +402,9 @@ class RAGPipeline:
         warnings = []
         sources = []
         stage = "retrieval"
-        model = settings.gemini_chat_model if settings.llm_provider == "gemini" else settings.databricks_llm_endpoint
+        model = {"gemini": settings.gemini_chat_model,
+                 "openrouter": settings.openrouter_model,
+                 "databricks": settings.databricks_llm_endpoint}[settings.llm_provider]
         try:
             with trace_query(question, top_k=settings.top_k, chat_model=model) as run_data:
                 notify("Understanding your question (API quota may require a short wait)...")

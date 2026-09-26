@@ -58,7 +58,19 @@ def get_chat_model():
     if _llm_instance is not None:
         return _llm_instance
 
-    if settings.llm_provider == "databricks":
+    if settings.llm_provider == "openrouter":
+        from langchain_openai import ChatOpenAI
+
+        logger.info("Using OpenRouter chat model (model='%s')", settings.openrouter_model)
+        _llm_instance = ChatOpenAI(
+            model=settings.openrouter_model,
+            api_key=settings.openrouter_api_key,
+            base_url=settings.openrouter_base_url,
+            temperature=settings.openrouter_temperature,
+            timeout=settings.request_timeout_seconds,
+            max_retries=0,
+        )
+    elif settings.llm_provider == "databricks":
         from langchain_databricks import ChatDatabricks
 
         logger.info(
@@ -103,13 +115,13 @@ def acquire_chat_slot() -> None:
     endpoint has a known throughput limit worth respecting.
     """
     global _chat_rate_limiter
-    if settings.llm_provider != "gemini":
+    if settings.llm_provider not in {"gemini", "openrouter"}:
         return
 
     if _chat_rate_limiter is None:
         from utils.rate_limiter import SlidingWindowRateLimiter
 
-        _chat_rate_limiter = SlidingWindowRateLimiter(
-            settings.gemini_chat_requests_per_minute, name="Gemini chat requests"
-        )
+        quota = (settings.gemini_chat_requests_per_minute if settings.llm_provider == "gemini"
+                 else settings.openrouter_requests_per_minute)
+        _chat_rate_limiter = SlidingWindowRateLimiter(quota, name=f"{settings.llm_provider} chat requests")
     _chat_rate_limiter.acquire(1)

@@ -22,7 +22,7 @@ def classify_error(exc: BaseException) -> ServiceIssue:
     if any(s in text for s in ("permission_denied", "permission denied", "403", "forbidden")):
         return ServiceIssue("permission", "The AI service denied access. Check model permissions and your company's network policy.")
     if any(s in text for s in ("404", "not_found", "not found for api", "not supported for generate", "model not found")):
-        return ServiceIssue("model", "The configured AI model or endpoint is unavailable. Check GEMINI_CHAT_MODEL or DATABRICKS_LLM_ENDPOINT for this account, then restart.")
+        return ServiceIssue("model", "The configured AI model or endpoint is unavailable. Check OPENROUTER_MODEL or the active provider's model setting, then restart.")
     if any(s in text for s in ("429", "resource_exhausted", "quota", "rate limit")):
         return ServiceIssue("quota", "The AI service is rate-limited or its quota is exhausted. Wait before retrying; if this continues, check the account quota.", True)
     if any(s in text for s in ("timeout", "timed out", "deadline")):

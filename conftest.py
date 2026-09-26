@@ -66,6 +66,8 @@ def isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "feedback_log_path", str(tmp_path / "feedback.jsonl"))
     monkeypatch.setattr(settings, "enable_reranking", False)  # avoid HF model download in tests
     monkeypatch.setattr(settings, "gemini_api_key", "test-key-not-real")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key-not-real")
+    monkeypatch.setattr(settings, "openrouter_model", "openai/gpt-4o-mini")
     # The production default score_threshold (0.3) is meaningless against
     # FakeEmbeddingProvider's hash-based vectors, which carry no real
     # semantic similarity -- tests that expect a seeded chunk to be found

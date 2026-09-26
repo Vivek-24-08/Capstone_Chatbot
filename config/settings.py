@@ -71,7 +71,14 @@ class Settings:
     # (no key of any kind lives in this app's config or code at all). Outside
     # Databricks, DATABRICKS_HOST + DATABRICKS_TOKEN below act as an explicit
     # fallback credential for local testing against a real workspace.
-    llm_provider: str = os.getenv("LLM_PROVIDER", "gemini")  # "gemini" | "databricks"
+    llm_provider: str = os.getenv("LLM_PROVIDER", "openrouter")
+
+    # -- OpenRouter (OpenAI-compatible chat API) ------------------------------
+    openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
+    openrouter_model: str = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    openrouter_base_url: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    openrouter_temperature: float = float(os.getenv("OPENROUTER_TEMPERATURE", "0.1"))
+    openrouter_requests_per_minute: int = int(os.getenv("OPENROUTER_REQUESTS_PER_MINUTE", "20"))
 
     # -- Gemini (used when LLM_PROVIDER=gemini and/or EMBEDDING_PROVIDER=gemini)
     # GEMINI_API_KEY is required for either. Get one at https://aistudio.google.com/apikey
@@ -154,6 +161,7 @@ class Settings:
     # real usage data; there is nothing universal about 0.3 itself.
     score_threshold: float = float(os.getenv("SCORE_THRESHOLD", "0.3"))
     enable_hybrid_search: bool = _bool_env("ENABLE_HYBRID_SEARCH", True)
+    enable_intelligent_search: bool = _bool_env("ENABLE_INTELLIGENT_SEARCH", True)
     enable_reranking: bool = _bool_env("ENABLE_RERANKING", True)
     reranker_model: str = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L6-v2")
 
@@ -202,9 +210,9 @@ class Settings:
         ambient workspace identity with no env vars set at all. Requiring
         them here would break that genuinely keyless deployment mode.
         """
-        if self.llm_provider not in {"gemini", "databricks"}:
+        if self.llm_provider not in {"openrouter", "gemini", "databricks"}:
             raise ValueError(
-                f"LLM_PROVIDER must be 'gemini' or 'databricks', got '{self.llm_provider}'"
+                f"LLM_PROVIDER must be 'openrouter', 'gemini', or 'databricks', got '{self.llm_provider}'"
             )
         if self.embedding_provider not in {"local", "gemini", "databricks"}:
             raise ValueError(
@@ -213,7 +221,7 @@ class Settings:
             )
         if self.gemini_transport not in {"rest", "grpc"}:
             raise ValueError("GEMINI_TRANSPORT must be rest or grpc.")
-        for name in ("chunk_size", "top_k", "embedding_batch_size", "gemini_embedding_requests_per_minute", "gemini_chat_requests_per_minute", "max_history_turns", "max_hops", "request_timeout_seconds"):
+        for name in ("chunk_size", "top_k", "embedding_batch_size", "gemini_embedding_requests_per_minute", "gemini_chat_requests_per_minute", "openrouter_requests_per_minute", "max_history_turns", "max_hops", "request_timeout_seconds"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name.upper()} must be greater than zero.")
         if not 0 <= self.chunk_overlap < self.chunk_size:
@@ -228,6 +236,13 @@ class Settings:
                 "your key from https://aistudio.google.com/apikey -- or set "
                 "LLM_PROVIDER=databricks to run keyless on Databricks instead."
             )
+        if require_chat and self.llm_provider == "openrouter":
+            if not self.openrouter_api_key:
+                raise ValueError("OPENROUTER_API_KEY is not set. Add it to .env, then restart the app.")
+            if not self.openrouter_model:
+                raise ValueError("OPENROUTER_MODEL is not set. Add an exact model ID available to your OpenRouter account.")
+            if not self.openrouter_base_url.startswith("https://"):
+                raise ValueError("OPENROUTER_BASE_URL must use HTTPS.")
         if self.embedding_provider == "gemini" and not self.gemini_api_key:
             raise ValueError("EMBEDDING_PROVIDER=gemini requires GEMINI_API_KEY to be set.")
 

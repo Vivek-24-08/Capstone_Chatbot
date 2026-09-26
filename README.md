@@ -4,7 +4,11 @@ A Retrieval-Augmented Generation (RAG) chatbot that answers member, provider,
 and policy questions using your official insurance plan documents (Evidence
 of Coverage, Summary of Benefits, and related policy manuals). Built to run
 with a local application and local document storage. Answer generation uses the
-configured Gemini or Databricks service; local embeddings do not make chat offline.
+configured OpenRouter service by default; local embeddings do not make chat offline.
+
+This edition adds an explainable intelligent-search router for insurance topics
+and uses OpenRouter's OpenAI-compatible HTTPS endpoint for answer generation.
+See [OPENROUTER_GUIDE.md](OPENROUTER_GUIDE.md) for the short sandbox setup.
 
 **Sandbox reliability update:** installation and launch commands are unchanged.
 See [SANDBOX_GUIDE.md](SANDBOX_GUIDE.md) for connection checks, error categories,
@@ -49,7 +53,7 @@ Optional diagnostics: `python -m scripts.doctor --probe` (makes small API reques
 │    rag_pipeline.py           RAGPipeline: retrieve→context→generate     │
 │        │                                                                 │
 │        ▼                                                                 │
-│  Gemini Chat Model (gemini-3.8-flash)  ──► grounded, cited answer       │
+│  OpenRouter Chat Model                 ──► grounded, cited answer       │
 │        │                                                                 │
 └────────┼──────────────────────────────────────────────────────────────┘
          ▼
